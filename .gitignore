@@ -500,3 +500,7 @@ Icon?
 .Trashes
 __MACOSX/
 *.idea
+
+credentials.json
+appsettings.json
+appsettings.*.json
