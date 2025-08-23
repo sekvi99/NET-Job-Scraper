@@ -50,7 +50,6 @@ public static class DependencyInjection
         services.AddScoped<IJobScraper, PracujScraper>();
         services.AddScoped<IJobScraper, JustJoinScraper>();
         services.AddScoped<IJobNormalizer, OpenAIJobNormalizer>();
-        services.AddScoped<IGoogleSheetsService, GoogleSheetsService>();
         services.AddScoped<IJobRepository, SqliteJobRepository>();
         services.AddScoped<IDuplicateDetector, DuplicateDetectorService>();
 

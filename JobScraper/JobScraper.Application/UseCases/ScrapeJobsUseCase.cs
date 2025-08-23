@@ -12,22 +12,22 @@ public class ScrapeJobsUseCase
 {
     private readonly IEnumerable<IJobScraper> _scrapers;
     private readonly IJobNormalizer _normalizer;
-    private readonly IGoogleSheetsService _sheetsService;
     private readonly IDuplicateDetector _duplicateDetector;
     private readonly IProgressReporter _progressReporter;
     private readonly ILogger<ScrapeJobsUseCase> _logger;
+    private readonly IJobRepository _jobRepository;
 
     public ScrapeJobsUseCase(
         IEnumerable<IJobScraper> scrapers,
         IJobNormalizer normalizer,
-        IGoogleSheetsService sheetsService,
         IDuplicateDetector duplicateDetector,
+        IJobRepository jobRepository,
         IProgressReporter progressReporter,
         ILogger<ScrapeJobsUseCase> logger)
     {
         _scrapers = scrapers;
         _normalizer = normalizer;
-        _sheetsService = sheetsService;
+        _jobRepository = jobRepository;
         _duplicateDetector = duplicateDetector;
         _progressReporter = progressReporter;
         _logger = logger;
@@ -41,7 +41,7 @@ public class ScrapeJobsUseCase
         var allJobs = new List<JobOffer>();
 
         // Get existing links to avoid duplicates
-        var existingLinks = (await _sheetsService.GetExistingLinksAsync(cancellationToken)).ToHashSet();
+        var existingLinks = (await _jobRepository.GetExistingLinksAsync(cancellationToken)).ToHashSet();
         
         foreach (var scraper in _scrapers)
         {
@@ -114,29 +114,29 @@ public class ScrapeJobsUseCase
         var uniqueJobs = _duplicateDetector.RemoveDuplicates(allJobs).ToList();
         result.Duplicates = allJobs.Count - uniqueJobs.Count;
 
-        // Save to Google Sheets
-        // if (uniqueJobs.Any())
-        // {
-        //     try
-        //     {
-        //         _progressReporter.ReportProgress(new ScrapingProgress
-        //         {
-        //             CurrentActivity = "Saving to Google Sheets",
-        //             Processed = result.Processed,
-        //             TotalFound = result.TotalFound
-        //         });
-// 
-        //         await _sheetsService.AppendJobsAsync(uniqueJobs, cancellationToken);
-        //         result.SavedToSheets = uniqueJobs.Count;
-        //         _logger.LogInformation("Saved {Count} jobs to Google Sheets", uniqueJobs.Count);
-        //     }
-        //     catch (Exception ex)
-        //     {
-        //         _logger.LogError(ex, "Failed to save jobs to Google Sheets");
-        //         result.SheetsSaveFailed = true;
-        //     }
-        // }
+        // Save to Cache db
+        if (uniqueJobs.Any())
+        {
+            try
+            {
+                _progressReporter.ReportProgress(new ScrapingProgress
+                {
+                    CurrentActivity = "Saving to sqlite database",
+                    Processed = result.Processed,
+                    TotalFound = result.TotalFound
+                });
 
+                await _jobRepository.SaveJobsAsync(uniqueJobs, cancellationToken);
+                result.SavedToSheets = uniqueJobs.Count;
+                _logger.LogInformation("Saved {Count} jobs to Google Sheets", uniqueJobs.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to save jobs to Google Sheets");
+                result.SheetsSaveFailed = true;
+            }
+        }
+        
         _logger.LogInformation("Scraping completed. Result: {@Result}", result);
         return result;
     }

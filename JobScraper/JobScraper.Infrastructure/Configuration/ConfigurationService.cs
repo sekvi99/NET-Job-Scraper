@@ -17,6 +17,9 @@ public class ConfigurationService : IConfigurationService
                                   ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") 
                                   ?? throw new InvalidOperationException("OpenAI API Key not configured");
 
+    public string SqliteConnectionString => Environment.GetEnvironmentVariable("SQLITE_CONNECTION_STRING") 
+                                            ?? throw new InvalidOperationException("Sqlite Connection not configured");
+
     public int DefaultMaxPerSite => _options.DefaultMaxPerSite;
     public int RateLimitDelayMs => _options.RateLimitDelayMs;
     public int MaxRetries => _options.MaxRetries;

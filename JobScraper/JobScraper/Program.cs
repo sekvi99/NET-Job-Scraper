@@ -14,7 +14,6 @@ using DotNetEnv;
 
 // Load .env file
 Env.Load();
-Console.WriteLine(Environment.GetEnvironmentVariable("GOOGLE_API_KEY"));
 
 // Build configuration early for Serilog
 var configuration = new ConfigurationBuilder()

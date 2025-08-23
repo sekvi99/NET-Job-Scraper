@@ -12,11 +12,13 @@ public class SqliteJobRepository : IJobRepository, IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly ILogger<SqliteJobRepository> _logger;
+    private readonly IConfigurationService _configuration;
 
-    public SqliteJobRepository(ILogger<SqliteJobRepository> logger, string connectionString = "Data Source=jobs_cache.db")
+    public SqliteJobRepository(ILogger<SqliteJobRepository> logger, IConfigurationService configuration)
     {
         _logger = logger;
-        _connection = new SqliteConnection(connectionString);
+        _configuration = configuration;
+        _connection = new SqliteConnection($"Data Source={_configuration.SqliteConnectionString}");
         _connection.Open();
         InitializeDatabase();
     }
@@ -54,6 +56,22 @@ public class SqliteJobRepository : IJobRepository, IDisposable
         }
 
         return jobs;
+    }
+    
+    public async Task<IEnumerable<string>> GetExistingLinksAsync(CancellationToken cancellationToken = default)
+    {
+        const string sql = "SELECT Link FROM Jobs";
+        using var command = new SqliteCommand(sql, _connection);
+    
+        var existingLinks = new List<string>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            existingLinks.Add(reader.GetString(0));
+        }
+    
+        return existingLinks;
     }
 
     public async Task SaveJobsAsync(IEnumerable<JobOffer> jobs, CancellationToken cancellationToken = default)
@@ -117,6 +135,68 @@ public class SqliteJobRepository : IJobRepository, IDisposable
 
         using var command = new SqliteCommand(createTableSql, _connection);
         command.ExecuteNonQuery();
+        
+        // Insert mock data
+        InsertMockData();
+    }
+
+    private void InsertMockData()
+    {
+        const string insertSql = """
+            INSERT OR IGNORE INTO Jobs 
+            (Link, Title, Company, Location, Source, PostedDate, ExpirationDate, SalaryJson, RequiredSkillsJson, RequiredYearsExperienceJson, RawTextSnapshot, IngestedAt)
+            VALUES (@Link, @Title, @Company, @Location, @Source, @PostedDate, @ExpirationDate, @SalaryJson, @RequiredSkillsJson, @RequiredYearsExperienceJson, @RawTextSnapshot, @IngestedAt)
+            """;
+
+        var mockJobs = new[]
+        {
+            new
+            {
+                Link = "https://example.com/jobs/senior-software-engineer-1",
+                Title = "Senior Software Engineer",
+                Company = "TechCorp Solutions",
+                Location = "San Francisco, CA",
+                Source = "LinkedIn",
+                PostedDate = "2024-08-15T09:00:00Z",
+                ExpirationDate = "2024-09-15T23:59:59Z",
+                SalaryJson = """{"Currency":"USD","Min":120000,"Max":160000,"Period":"Annual"}""",
+                RequiredSkillsJson = """["C#",".NET Core","SQL Server","Azure","Docker"]""",
+                RequiredYearsExperienceJson = """{"Min":5,"Max":8}""",
+                RawTextSnapshot = "We are looking for a Senior Software Engineer to join our team...",
+                IngestedAt = "2024-08-20T10:30:00Z"
+            }
+        };
+
+        using var transaction = _connection.BeginTransaction();
+        try
+        {
+            foreach (var job in mockJobs)
+            {
+                using var command = new SqliteCommand(insertSql, _connection, transaction);
+                command.Parameters.AddWithValue("@Link", job.Link);
+                command.Parameters.AddWithValue("@Title", job.Title);
+                command.Parameters.AddWithValue("@Company", job.Company);
+                command.Parameters.AddWithValue("@Location", job.Location);
+                command.Parameters.AddWithValue("@Source", job.Source);
+                command.Parameters.AddWithValue("@PostedDate", job.PostedDate);
+                command.Parameters.AddWithValue("@ExpirationDate", job.ExpirationDate);
+                command.Parameters.AddWithValue("@SalaryJson", job.SalaryJson);
+                command.Parameters.AddWithValue("@RequiredSkillsJson", job.RequiredSkillsJson);
+                command.Parameters.AddWithValue("@RequiredYearsExperienceJson", job.RequiredYearsExperienceJson);
+                command.Parameters.AddWithValue("@RawTextSnapshot", job.RawTextSnapshot);
+                command.Parameters.AddWithValue("@IngestedAt", job.IngestedAt);
+
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            _logger.LogInformation("Inserted {Count} mock jobs into database", mockJobs.Length);
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
     }
 
     private static JobOffer MapReaderToJobOffer(SqliteDataReader reader) =>
@@ -136,8 +216,6 @@ public class SqliteJobRepository : IJobRepository, IDisposable
             IngestedAt = DateTime.Parse(reader.GetString(reader.GetOrdinal("IngestedAt")))
         };
     
-
-
     public void Dispose()
     {
         _connection?.Dispose();
