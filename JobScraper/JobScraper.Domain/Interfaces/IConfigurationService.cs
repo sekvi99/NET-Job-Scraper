@@ -7,4 +7,5 @@ public interface IConfigurationService
     int DefaultMaxPerSite { get; }
     int RateLimitDelayMs { get; }
     int MaxRetries { get; }
+    int DefaultTimeOut { get; }
 }

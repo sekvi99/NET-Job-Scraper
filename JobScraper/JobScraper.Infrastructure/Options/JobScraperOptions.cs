@@ -7,5 +7,6 @@ public class JobScraperOptions
     public int DefaultMaxPerSite { get; set; } = 50;
     public int RateLimitDelayMs { get; set; } = 1000;
     public int MaxRetries { get; set; } = 3;
+    public int DefaultTimeOut { get; set; } = 15;
     public GoogleSheetsOptions GoogleSheets { get; set; } = new();
 }

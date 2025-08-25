@@ -23,4 +23,5 @@ public class ConfigurationService : IConfigurationService
     public int DefaultMaxPerSite => _options.DefaultMaxPerSite;
     public int RateLimitDelayMs => _options.RateLimitDelayMs;
     public int MaxRetries => _options.MaxRetries;
+    public int DefaultTimeOut => _options.DefaultTimeOut;
 }

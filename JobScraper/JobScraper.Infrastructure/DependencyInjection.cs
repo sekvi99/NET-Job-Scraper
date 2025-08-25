@@ -46,8 +46,8 @@ public static class DependencyInjection
         }).AddPolicyHandler(retryPolicy);
 
         // Services
-        services.AddScoped<IJobScraper, NoFluffJobsScraper>();
-        services.AddScoped<IJobScraper, PracujScraper>();
+        // services.AddScoped<IJobScraper, NoFluffJobsScraper>();
+        // services.AddScoped<IJobScraper, PracujScraper>();
         services.AddScoped<IJobScraper, JustJoinScraper>();
         services.AddScoped<IJobNormalizer, OpenAIJobNormalizer>();
         services.AddScoped<IJobRepository, SqliteJobRepository>();

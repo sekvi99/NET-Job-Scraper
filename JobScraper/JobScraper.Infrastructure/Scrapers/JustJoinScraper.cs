@@ -1,16 +1,18 @@
-using AngleSharp.Dom;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Support.UI;
 using JobScraper.Domain.DTOs;
 using JobScraper.Domain.Entities;
 using JobScraper.Domain.Enums;
 using JobScraper.Domain.Interfaces;
+using JobScraper.Infrastructure.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace JobScraper.Infrastructure.Scrapers;
 
-public class JustJoinScraper : BaseJobScraper
+public class JustJoinScraper : BaseSeleniumScraper
 {
-    public JustJoinScraper(HttpClient httpClient, ILogger<JustJoinScraper> logger, IConfigurationService config)
-        : base(httpClient, logger, config) { }
+    public JustJoinScraper(ILogger<PracujScraper> logger, IConfigurationService config)
+        : base(logger, config) { }
 
     public override JobSource Source => JobSource.JustJoin;
 
@@ -22,22 +24,20 @@ public class JustJoinScraper : BaseJobScraper
         {
             try
             {
-                var searchUrl = BuildSearchUrl(title, criteria);
-                _logger.LogInformation("Scraping JustJoin.it: {Url}", searchUrl);
-                
-                var document = await GetDocumentAsync(searchUrl, cancellationToken);
-                var jobCards = document.QuerySelectorAll("[data-test-id='virtualized-list-item']");
-                
-                var maxJobs = criteria.MaxPerSite ?? _config.DefaultMaxPerSite;
+                var (webJobs, maxJobs) = FindElements(title, criteria, ".posting-list-item");
                 var processedCount = 0;
+                var jobIndex = 0;
 
-                foreach (var jobCard in jobCards.Take(maxJobs))
+
+                foreach (var jobElement in webJobs)
                 {
+                    jobIndex++;
                     if (cancellationToken.IsCancellationRequested) break;
 
                     try
                     {
-                        var job = ExtractJobFromCard(jobCard);
+                        _logger.LogInformation($"Processing {jobIndex} out of {maxJobs} jobs");
+                        var job = await ExtractJobFromElement(jobElement, cancellationToken);
                         if (job != null)
                         {
                             jobs.Add(job);
@@ -46,7 +46,7 @@ public class JustJoinScraper : BaseJobScraper
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to extract job from JustJoin.it card");
+                        _logger.LogWarning(ex, "Failed to extract job from JustJoin.it element");
                     }
                 }
 
@@ -61,7 +61,7 @@ public class JustJoinScraper : BaseJobScraper
         return jobs;
     }
 
-    private string BuildSearchUrl(string title, JobSearchCriteria criteria)
+    public override string BuildSearchUrl(string title, JobSearchCriteria criteria)
     {
         var baseUrl = "https://justjoin.it/all-locations";
         var fragment = new List<string>();
@@ -77,42 +77,83 @@ public class JustJoinScraper : BaseJobScraper
         return fragment.Any() ? $"{baseUrl}/#{string.Join("&", fragment)}" : baseUrl;
     }
 
-    private RawJobOffer? ExtractJobFromCard(IElement jobCard)
+    private async Task<RawJobOffer?> ExtractJobFromElement(IWebElement jobElement, CancellationToken cancellationToken)
     {
         try
         {
-            var linkElement = jobCard.QuerySelector("a");
-            var titleElement = jobCard.QuerySelector("h3");
-            var companyElement = jobCard.QuerySelector("[data-test-id='company-name']");
-            var locationElement = jobCard.QuerySelector("[data-test-id='location-name']");
-            var salaryElement = jobCard.QuerySelector("[data-test-id='salary-range']");
+            var title = jobElement.SafeGetText("h3");
+            var company = jobElement.SafeGetText("[data-test-id='company-name']");
+            var location = jobElement.SafeGetText("[data-test-id='location-name']");
+            var salary = jobElement.SafeGetText("[data-test-id='salary-range']");
+            
+            // Extract link safely
+            var fullLink = ExtractJobLink(jobElement);
 
-            var link = ExtractAttributeSafely(linkElement, "href");
-            var title = ExtractTextSafely(titleElement);
-            var company = ExtractTextSafely(companyElement);
-            var location = ExtractTextSafely(locationElement);
-            var salary = ExtractTextSafely(salaryElement);
-
-            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(link))
+            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(fullLink))
                 return null;
-
-            var fullLink = link.StartsWith("http") ? link : $"https://justjoin.it{link}";
 
             return new RawJobOffer
             {
-                ScrapedTitle = CleanText(title),
-                ScrapedCompany = CleanText(company),
-                ScrapedLocation = CleanText(location),
-                ScrapedSalaryText = CleanText(salary),
-                CleanedDescription = CleanText(title), // Simplified for this example
+                ScrapedTitle = title.CleanText(),
+                ScrapedCompany = company.CleanText(),
+                ScrapedLocation = location.CleanText(),
+                ScrapedSalaryText = salary.CleanText(),
+                CleanedDescription = title.CleanText(), // Simplified for this example
                 Link = fullLink,
                 Source = Source
             };
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error extracting job from JustJoin.it card");
+            _logger.LogWarning(ex, "Error extracting job from JustJoin.it element");
             return null;
+        }
+    }
+
+    private string ExtractJobLink(IWebElement jobElement)
+    {
+        try
+        {
+            // Try multiple approaches to find the link
+            IWebElement linkElement = null;
+
+            // Approach 1: Look for the first a tag (most common for JustJoin.it)
+            try
+            {
+                linkElement = jobElement.FindElement(By.TagName("a"));
+            }
+            catch (NoSuchElementException)
+            {
+                // Approach 2: Look for specific link patterns
+                try
+                {
+                    linkElement = jobElement.FindElement(By.CssSelector("a[href*='/offer/']"));
+                }
+                catch (NoSuchElementException)
+                {
+                    // Approach 3: Look for any clickable link
+                    try
+                    {
+                        linkElement = jobElement.FindElement(By.CssSelector("a[href]"));
+                    }
+                    catch (NoSuchElementException)
+                    {
+                        return string.Empty;
+                    }
+                }
+            }
+
+            var relativeLink = linkElement?.GetAttribute("href");
+
+            if (string.IsNullOrEmpty(relativeLink))
+                return string.Empty;
+
+            // Convert relative to absolute URL
+            return relativeLink.StartsWith("http") ? relativeLink : $"https://justjoin.it{relativeLink}";
+        }
+        catch (Exception)
+        {
+            return string.Empty;
         }
     }
 }

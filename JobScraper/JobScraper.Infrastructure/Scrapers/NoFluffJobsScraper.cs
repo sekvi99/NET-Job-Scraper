@@ -1,4 +1,5 @@
-using AngleSharp.Dom;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Support.UI;
 using JobScraper.Domain.DTOs;
 using JobScraper.Domain.Entities;
 using JobScraper.Domain.Enums;
@@ -8,37 +9,35 @@ using Microsoft.Extensions.Logging;
 
 namespace JobScraper.Infrastructure.Scrapers;
 
-public class NoFluffJobsScraper : BaseJobScraper
+public class NoFluffJobsScraper : BaseSeleniumScraper
 {
-    public NoFluffJobsScraper(HttpClient httpClient, ILogger<NoFluffJobsScraper> logger, IConfigurationService config)
-        : base(httpClient, logger, config) { }
+    public NoFluffJobsScraper(ILogger<PracujScraper> logger, IConfigurationService config)
+        : base(logger, config) { }
 
     public override JobSource Source => JobSource.NoFluffJobs;
 
     public override async Task<IEnumerable<RawJobOffer>> ScrapeJobsAsync(JobSearchCriteria criteria, CancellationToken cancellationToken = default)
     {
+        _logger.LogInformation("Scraping JustJoin.it with Selenium");
         var jobs = new List<RawJobOffer>();
         
         foreach (var title in criteria.Titles)
         {
             try
             {
-                var searchUrl = BuildSearchUrl(title, criteria);
-                _logger.LogInformation("Scraping NoFluffJobs: {Url}", searchUrl);
-                
-                var document = await GetDocumentAsync(searchUrl, cancellationToken);
-                var jobCards = document.QuerySelectorAll(".posting-list-item");
-                
-                var maxJobs = criteria.MaxPerSite ?? _config.DefaultMaxPerSite;
+                var (webJobs, maxJobs) = FindElements(title, criteria, ".posting-list-item");
                 var processedCount = 0;
+                var jobIndex = 0;
 
-                foreach (var jobCard in jobCards.Take(maxJobs))
+                foreach (var jobElement in webJobs)
                 {
+                    jobIndex++;
                     if (cancellationToken.IsCancellationRequested) break;
 
                     try
                     {
-                        var job = await ExtractJobFromCard(jobCard, cancellationToken);
+                        _logger.LogInformation($"Processing {jobIndex} out of {maxJobs} jobs");
+                        var job = await ExtractJobFromElement(jobElement, cancellationToken);
                         if (job != null)
                         {
                             jobs.Add(job);
@@ -47,7 +46,7 @@ public class NoFluffJobsScraper : BaseJobScraper
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to extract job from NoFluffJobs card");
+                        _logger.LogWarning(ex, "Failed to extract job from NoFluffJobs element");
                     }
                 }
 
@@ -62,7 +61,7 @@ public class NoFluffJobsScraper : BaseJobScraper
         return jobs;
     }
 
-    private string BuildSearchUrl(string title, JobSearchCriteria criteria)
+    public override string BuildSearchUrl(string title, JobSearchCriteria criteria)
     {
         var baseUrl = "https://nofluffjobs.com/pl/jobs";
         var query = new List<string>();
@@ -83,62 +82,100 @@ public class NoFluffJobsScraper : BaseJobScraper
         return query.Any() ? $"{baseUrl}?{string.Join("&", query)}" : baseUrl;
     }
 
-    private async Task<RawJobOffer?> ExtractJobFromCard(IElement jobCard, CancellationToken cancellationToken)
+    private async Task<RawJobOffer?> ExtractJobFromElement(IWebElement jobElement, CancellationToken cancellationToken)
     {
         try
         {
-            var titleElement = jobCard.QuerySelector(".posting-title__position");
-            var linkElement = jobCard.QuerySelector("a.posting-list-item");
-            var companyElement = jobCard.QuerySelector(".posting-title__company");
-            var locationElement = jobCard.QuerySelector(".posting-info__location");
-            var salaryElement = jobCard.QuerySelector(".posting-info__salary");
-
-            var title = ExtractTextSafely(titleElement);
-            var relativeLink = ExtractAttributeSafely(linkElement, "href");
-            var company = ExtractTextSafely(companyElement);
-            var location = ExtractTextSafely(locationElement);
-            var salary = ExtractTextSafely(salaryElement);
-
-            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(relativeLink))
-                return null;
-
-            var fullLink = relativeLink.StartsWith("http") ? relativeLink : $"https://nofluffjobs.com{relativeLink}";
+            var title = jobElement.SafeGetText(".posting-title__position");
+        
+            // Extract company name from footer
+            var company = jobElement.SafeGetText("footer .company-name");
+        
+            // Extract salary - try multiple selectors
+            var salary = jobElement.SafeGetTextMultiple(
+                ".posting-item-salary",
+                "[data-cy*='salary']",
+                ".salary", 
+                ".posting-tag span",
+                ".tw-cursor-pointer span",
+                ".posting-tag"
+            );
+        
+            // Extract location - try multiple selectors  
+            var location = jobElement.SafeGetTextMultiple(
+                ".posting-item-city",
+                "[data-cy*='location']", 
+                ".location",
+                ".posting-info__location",
+                ".posting-info__location span",
+                ".tw-text-gray"
+            );
             
-            // Get job details page for description
-            var description = await GetJobDescription(fullLink, cancellationToken);
+            // Extract link safely
+            var fullLink = ExtractJobLink(jobElement);
+        
+            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(fullLink))
+                return null;
 
             return new RawJobOffer
             {
-                ScrapedTitle = CleanText(title),
-                ScrapedCompany = CleanText(company),
-                ScrapedLocation = CleanText(location),
-                ScrapedSalaryText = CleanText(salary),
-                CleanedDescription = description,
+                ScrapedTitle = title.CleanText(),
+                ScrapedCompany = company.CleanText(),
+                ScrapedLocation = location.CleanText(),
+                ScrapedSalaryText = salary.CleanText(),
                 Link = fullLink,
                 Source = Source
             };
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error extracting job from NoFluffJobs card");
+            _logger.LogWarning(ex, "Error extracting job from NoFluffJobs element");
             return null;
         }
     }
-
-    private async Task<string> GetJobDescription(string jobUrl, CancellationToken cancellationToken)
+    
+    private string ExtractJobLink(IWebElement jobElement)
     {
         try
         {
-            var document = await GetDocumentAsync(jobUrl, cancellationToken);
-            var descriptionElement = document.QuerySelector(".posting-description");
-            var requirementsElement = document.QuerySelector(".posting-requirements");
+            // Try multiple approaches to find the link
+            IWebElement linkElement = null;
+        
+            // Approach 1: Look for specific link with job URL
+            try
+            {
+                linkElement = jobElement.FindElement(By.CssSelector("a[href*='/job/']"));
+            }
+            catch (NoSuchElementException)
+            {
+                // Approach 2: Look for the first a tag
+                try
+                {
+                    linkElement = jobElement.FindElement(By.TagName("a"));
+                }
+                catch (NoSuchElementException)
+                {
+                    // Approach 3: Look for link in header
+                    try
+                    {
+                        linkElement = jobElement.FindElement(By.CssSelector("header a"));
+                    }
+                    catch (NoSuchElementException)
+                    {
+                        return string.Empty;
+                    }
+                }
+            }
+        
+            var relativeLink = linkElement?.GetAttribute("href");
+        
+            if (string.IsNullOrEmpty(relativeLink))
+                return string.Empty;
             
-            var description = ExtractTextSafely(descriptionElement) ?? string.Empty;
-            var requirements = ExtractTextSafely(requirementsElement) ?? string.Empty;
-            
-            return CleanText($"{description}\n{requirements}").Truncate(2000);
+            // Convert relative to absolute URL
+            return relativeLink.StartsWith("http") ? relativeLink : $"https://nofluffjobs.com{relativeLink}";
         }
-        catch
+        catch (Exception)
         {
             return string.Empty;
         }
